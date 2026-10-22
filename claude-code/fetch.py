@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
+"""Download the Claude Code linux-arm64-musl binaries from npm, one directory per version.
+
+    python3 fetch.py                 # every published version
+    python3 fetch.py 2.1.308 2.1.307 # only these
+
+Each version is written as <output>/<version>/claude. The binaries themselves are NOT in
+git (221 MB each, far above GitHub's 100 MB limit); only <version>/SHA256SUMS is tracked.
+After downloading, the binary is checked against that file if it exists, otherwise the
+file is created.
+"""
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -13,6 +24,34 @@ from pathlib import Path
 PACKAGE = "@anthropic-ai/claude-code-linux-arm64-musl"
 REGISTRY_URL = f"https://registry.npmjs.org/{PACKAGE}"
 TIMEOUT = 120
+SCRIPT_DIR = Path(__file__).resolve().parent
+SUMS_NAME = "SHA256SUMS"
+
+
+def sha256_of(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def check_or_write_sums(binary):
+    """Verify <dir>/SHA256SUMS against the binary, or create it when absent."""
+    sums = binary.parent / SUMS_NAME
+    actual = sha256_of(binary)
+    if sums.is_file():
+        for line in sums.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].lstrip("*") == binary.name:
+                if parts[0] != actual:
+                    raise ValueError(
+                        f"sha256 mismatch: expected {parts[0]}, got {actual}"
+                    )
+                return "sha256 OK"
+    # sha256sum -c 互換の形式で書く。
+    sums.write_text(f"{actual}  {binary.name}\n")
+    return f"sha256 written to {sums.name}"
 
 
 def open_url(url):
@@ -32,7 +71,7 @@ def extract_binary(version, metadata, output_dir):
     destination = output_dir / version / "claude"
 
     if destination.is_file() and destination.stat().st_size > 0:
-        print(f"[SKIP] {version}: {destination}")
+        print(f"[SKIP] {version}: {destination} ({check_or_write_sums(destination)})")
         return
 
     tarball_url = metadata["dist"]["tarball"]
@@ -73,7 +112,7 @@ def extract_binary(version, metadata, output_dir):
         binary_path.chmod(0o755)
         os.replace(binary_path, destination)
 
-    print(f"[OK]   {version}: {destination}", flush=True)
+    print(f"[OK]   {version}: {destination} ({check_or_write_sums(destination)})", flush=True)
 
 
 def main():
@@ -88,13 +127,16 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("./claude-code"),
-        help="保存先ディレクトリ（既定: ./claude-code）",
+        default=SCRIPT_DIR,
+        help="保存先ディレクトリ（既定: このスクリプトと同じディレクトリ）",
     )
     args = parser.parse_args()
 
     metadata = get_metadata()
-    published_versions = metadata["versions"]
+    # 0.0.0 は npm 上のプレースホルダーで、バイナリを含まない。
+    published_versions = {
+        v: m for v, m in metadata["versions"].items() if v != "0.0.0"
+    }
 
     versions = (
         list(dict.fromkeys(args.versions))
