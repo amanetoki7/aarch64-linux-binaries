@@ -11,13 +11,16 @@
 set -e
 SRC=${1:-$(ls ./node-v22.*-aarch64-linux-selfcontained.tar.gz 2>/dev/null | head -n1)}
 [ -n "$SRC" ] && [ -e "$SRC" ] || { echo "usage: $0 <tarball | extracted dir>"; exit 1; }
-D=/opt/node22; NEW=/opt/node22.new
-rm -rf "$NEW"; mkdir -p "$NEW"
+D=/opt/node22; NEW=/opt/node22.new; X=/opt/node22.extract
+rm -rf "$NEW" "$X"
 if [ -d "$SRC" ]; then
-  cp -a "$SRC/." "$NEW/"
+  mkdir -p "$NEW"; cp -a "$SRC/." "$NEW/"
   SUMS="$NEW/SHA256SUMS.tree"
 else
-  tar xzf "$SRC" -C "$NEW" --strip-components=1
+  # no --strip-components: busybox tar lacks it, so extract and move the single top-level dir
+  mkdir -p "$X"; tar xzf "$SRC" -C "$X"
+  TOP=$(ls "$X" | head -n1); [ -n "$TOP" ] && [ -d "$X/$TOP" ] || { echo "ERROR: unexpected tarball layout"; exit 1; }
+  mv "$X/$TOP" "$NEW"; rm -rf "$X"
   SUMS="$(cd "$(dirname "$SRC")" && pwd)/SHA256SUMS.tree"
 fi
 [ -x "$NEW/bin/node" ] && [ "$(wc -c < "$NEW/bin/node")" -gt 50000000 ] || { echo "ERROR: $NEW/bin/node missing or truncated"; exit 1; }
